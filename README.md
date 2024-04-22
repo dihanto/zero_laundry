@@ -95,3 +95,15 @@ $ dfx start --clean --background
 # Deploys your canisters to the replica and generates your candid interface
 $ npm run gen-deploy
 ```
+
+## Interact with the canister in candid
+
+- add a user
+- add a laundry
+- pay a laundry
+- check the laundry is done or not yet
+
+the laundry have 2 package
+
+- regular is 24 hour to get done
+- express is 4 hour to get done
