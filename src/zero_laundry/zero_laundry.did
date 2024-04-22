@@ -1,0 +1,48 @@
+type Error = variant {
+  InvalidInput : record { msg : text };
+  LaundryAlreadyDone : record { msg : text };
+  InsufficientBalance : record { msg : text };
+  NotFound : record { msg : text };
+  LaundryNotDone : record { msg : text };
+  AlreadyPaid : record { msg : text };
+};
+type Laundry = record {
+  id : nat64;
+  weight : nat64;
+  status : text;
+  updated_at : opt nat64;
+  package : text;
+  created_at : nat64;
+  user_id : nat64;
+  amount_to_pay : nat64;
+  finished_at : opt nat64;
+};
+type LaundryPayload = record {
+  weight : nat64;
+  package : text;
+  user_id : nat64;
+};
+type PayPayload = record { user_id : nat64; laundry_id : nat64 };
+type Result = variant { Ok : Laundry; Err : Error };
+type Result_1 = variant { Ok : vec Laundry; Err : Error };
+type Result_2 = variant { Ok : vec User; Err : Error };
+type Result_3 = variant { Ok : User; Err : Error };
+type User = record {
+  id : nat64;
+  completed_orders : vec nat64;
+  balance : nat64;
+  name : text;
+  pending_orders : vec nat64;
+  active_orders : vec nat64;
+};
+type UserPayload = record { name : text };
+service : {
+  add_laundry : (LaundryPayload) -> (Result);
+  add_user : (UserPayload) -> (opt User);
+  get_all_laundries : () -> (Result_1) query;
+  get_all_users : () -> (Result_2) query;
+  get_laundry_by_id : (nat64) -> (Result) query;
+  get_user_by_id : (nat64) -> (Result_3) query;
+  is_laundry_done : (nat64) -> (Result);
+  pay_laundry : (PayPayload) -> (Result);
+}

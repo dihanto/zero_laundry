@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "canisters": {
+    "zero_laundry": {
+      "type": "rust",
+      "package": "zero_laundry",
+      "candid": "src/zero_laundry/zero_laundry.did"
+    }
+  },
+  "output_env_file": ".env"
+}
