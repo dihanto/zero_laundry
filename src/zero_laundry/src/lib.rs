@@ -6,6 +6,12 @@ use ic_cdk::api::time;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
 use std::{borrow::Cow, cell::RefCell};
+// Import necessary crates and modules
+use std::time::SystemTime;
+
+// Define constants for package prices
+const REGULAR_PRICE_PER_KG: u64 = 6;
+const EXPRESS_PRICE_PER_KG: u64 = 10;
 
 // Define types for memory management
 type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -87,6 +93,93 @@ thread_local! {
         RefCell::new(StableBTreeMap::init(
             MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(2)))
         ));
+}
+
+// Payload for updating user details
+#[derive(candid::CandidType, Serialize, Deserialize, Default)]
+struct UpdateUserPayload {
+    id: u64,
+    name: Option<String>,
+    balance: Option<u64>,
+}
+
+// Enum for order status
+#[derive(candid::CandidType, Deserialize, Serialize)]
+enum OrderStatus {
+    Pending,
+    Active,
+    Completed,
+}
+
+// Function to update user details
+#[ic_cdk::update]
+fn update_user(payload: UpdateUserPayload) -> Result<(), Error> {
+    let mut user = match get_user(&payload.id) {
+        Some(user) => user,
+        None => return Err(Error::NotFound { msg: "User not found".to_string() }),
+    };
+
+    if let Some(name) = payload.name {
+        user.name = name;
+    }
+
+    if let Some(balance) = payload.balance {
+        user.balance = balance;
+    }
+
+    do_insert_user(&user);
+    Ok(())
+}
+
+// Function to mark a laundry as completed manually
+#[ic_cdk::update]
+fn mark_laundry_completed_manually(id: u64) -> Result<(), Error> {
+    let mut laundry = match get_laundry(&id) {
+        Some(laundry) => laundry,
+        None => return Err(Error::NotFound { msg: "Laundry not found".to_string() }),
+    };
+
+    if laundry.status == "paid/done".to_string() {
+        return Err(Error::LaundryAlreadyDone {
+            msg: "Laundry is already marked as done".to_string(),
+        });
+    }
+
+    laundry.status = "paid/done".to_string();
+    laundry.updated_at = Some(time());
+    do_insert_laundry(&laundry);
+
+    // Update user's completed orders
+    match USER_STORAGE.with(|service| service.borrow().get(&laundry.user_id)) {
+        Some(mut user) => {
+            user.completed_orders.push(laundry.id);
+            user.active_orders.retain(|&x| x != laundry.id);
+            do_insert_user(&user);
+            Ok(())
+        }
+        None => Err(Error::NotFound { msg: "User not found".to_string() }),
+    }
+}
+
+// Function to retrieve orders by status
+#[ic_cdk::query]
+fn get_orders_by_status(status: OrderStatus) -> Result<Vec<Laundry>, Error> {
+    let laundries_map: Vec<(u64, Laundry)> = LAUNDRY_STORAGE.with(|service| service.borrow().iter().collect());
+    let laundries: Vec<Laundry> = laundries_map
+        .into_iter()
+        .map(|(_, laundry)| laundry)
+        .filter(|laundry| match status {
+            OrderStatus::Pending => laundry.status == "waiting for payment",
+            OrderStatus::Active => laundry.status == "paid/on progress",
+            OrderStatus::Completed => laundry.status == "paid/done",
+        })
+        .collect();
+
+    if !laundries.is_empty() {
+        Ok(laundries)
+    } else {
+        Err(Error::NotFound { msg: "No orders found with the specified status".to_string() })
+    }
 }
 
 // Payload for creating users
