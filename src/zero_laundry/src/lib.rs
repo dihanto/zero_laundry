@@ -3,9 +3,9 @@
 extern crate serde;
 use candid::{Decode, Encode};
 use ic_cdk::api::time;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
-use std::{borrow::Cow, cell::RefCell};
+use std::{cell::RefCell, collections::HashMap};
 
 // Define types for memory management
 type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -117,14 +117,14 @@ enum Error {
     InvalidInput { msg: String },
     InsufficientBalance { msg: String },
     AlreadyPaid { msg: String },
-    LaundryNotDone { msg: String },
+    LaundryNotDone { msg: String, remaining_time: (u64, u64) }, // Include remaining time
     LaundryAlreadyDone { msg: String },
 }
 
 // Function to add a user
 #[ic_cdk::update]
 fn add_user(payload: UserPayload) -> Option<User> {
-    // Increment user ID counter
+    // Increment user ID counter and return the new value
     let id = ID_COUNTER.with(|counter| {
         let current_value = *counter.borrow().get();
         counter.borrow_mut().set(current_value + 1)
@@ -153,16 +153,18 @@ fn do_insert_user(user: &User) {
 
 // Function to retrieve all users
 #[ic_cdk::query]
-fn get_all_users() -> Result<Vec<User>, Error> {
+fn get_all_users() -> Option<Vec<User>> {
     // Retrieve all users from storage
-    let users_map: Vec<(u64, User)> = USER_STORAGE.with(|service| service.borrow().iter().collect());
+    let users_map: HashMap<u64, User> = USER_STORAGE.with(|service| service.borrow().iter().map(|(k, v)| (*k, v.clone())).collect());
+
+    // Convert hashmap values to vector
     let users: Vec<User> = users_map.into_iter().map(|(_, user)| user).collect();
 
-    // Return users if found, otherwise return error
+    // Return users if found
     if !users.is_empty() {
-        Ok(users)
+        Some(users)
     } else {
-        Err(Error::NotFound { msg: "No users found".to_string() })
+        None
     }
 }
 
@@ -184,7 +186,7 @@ fn get_user(id: &u64) -> Option<User> {
 // Function to add a laundry
 #[ic_cdk::update]
 fn add_laundry(payload: LaundryPayload) -> Result<Laundry, Error> {
-    // Increment laundry ID counter
+    // Increment laundry ID counter and return the new value
     let id = ID_COUNTER.with(|counter| {
         let current_value = *counter.borrow().get();
         counter.borrow_mut().set(current_value + 1)
@@ -195,8 +197,7 @@ fn add_laundry(payload: LaundryPayload) -> Result<Laundry, Error> {
     let amount_to_pay: u64 = match payload.package.as_str() {
         "regular" => payload.weight * 6,
         "express" => payload.weight * 10,
-        _ => return Err(Error::InvalidInput { msg: "Invalid package type".to_string() }),
-    };
+        _ => return Err(Error::InvalidInput { msg: "Invalid package type".to_string()});
 
     // Create new laundry
     let laundry = Laundry {
@@ -214,14 +215,26 @@ fn add_laundry(payload: LaundryPayload) -> Result<Laundry, Error> {
     // Insert laundry into storage
     do_insert_laundry(&laundry);
 
-    // Update user's pending orders
+    // Update user's pending orders or create user if not found
     match get_user(&payload.user_id) {
         Some(mut user) => {
             user.pending_orders.push(laundry.id);
             do_insert_user(&user);
             Ok(laundry)
         }
-        None => Err(Error::NotFound { msg: "User not found".to_string() }),
+        None => {
+            // Create new user
+            let new_user = User {
+                id: payload.user_id,
+                name: format!("User {}", payload.user_id),
+                balance: 0,
+                pending_orders: vec![laundry.id],
+                active_orders: vec![],
+                completed_orders: vec![],
+            };
+            do_insert_user(&new_user);
+            Ok(laundry)
+        }
     }
 }
 
@@ -232,16 +245,18 @@ fn do_insert_laundry(laundry: &Laundry) {
 
 // Function to retrieve all laundries
 #[ic_cdk::query]
-fn get_all_laundries() -> Result<Vec<Laundry>, Error> {
+fn get_all_laundries() -> Option<Vec<Laundry>> {
     // Retrieve all laundries from storage
-    let laundries_map: Vec<(u64, Laundry)> = LAUNDRY_STORAGE.with(|service| service.borrow().iter().collect());
+    let laundries_map: HashMap<u64, Laundry> = LAUNDRY_STORAGE.with(|service| service.borrow().iter().map(|(k, v)| (*k, v.clone())).collect());
+
+    // Convert hashmap values to vector
     let laundries: Vec<Laundry> = laundries_map.into_iter().map(|(_, laundry)| laundry).collect();
 
-    // Return laundries if found, otherwise return error
+    // Return laundries if found
     if !laundries.is_empty() {
-        Ok(laundries)
+        Some(laundries)
     } else {
-        Err(Error::NotFound { msg: "No laundries found".to_string() })
+        None
     }
 }
 
@@ -289,7 +304,7 @@ fn pay_laundry(payload: PayPayload) -> Result<Laundry, Error> {
             do_insert_user(&user);
 
             // Update laundry status and timestamps
-            match LAUNDRY_STORAGE.with(|service| service.borrow().get(&payload.laundry_id)) {
+            match LAUNDRY_STORAGE.with(|service| service.borrow_mut().get_mut(&payload.laundry_id)) {
                 Some(mut laundry) => {
                     if laundry.status == "paid/on progress".to_string() || laundry.status == "paid/done".to_string() {
                         return Err(Error::AlreadyPaid { msg: "Laundry already paid".to_string() });
@@ -307,8 +322,7 @@ fn pay_laundry(payload: PayPayload) -> Result<Laundry, Error> {
 
                     laundry.finished_at = Some(finish);
                     laundry.updated_at = Some(time());
-                    do_insert_laundry(&laundry);
-                    Ok(laundry)
+                    Ok(laundry.clone())
                 }
                 None => Err(Error::NotFound { msg: "Laundry not found".to_string() })
             }
@@ -360,11 +374,13 @@ fn is_laundry_done(id: u64) -> Result<Laundry, Error> {
                     let minutes = (duration - (hours * 3600000000000)) / 60000000000;
                     return Err(Error::LaundryNotDone {
                         msg: format!("Laundry not done. Time left: {}h {}m ", hours, minutes),
+                        remaining_time: (hours, minutes), // Include remaining time
                     });
                 }
             } else {
+                
                 // Return error if laundry has no finish time
-                return Err(Error::InvalidInput {
+            return Err(Error::InvalidInput {
                     msg: "Laundry has no finish time".to_string(),
                 });
             }
